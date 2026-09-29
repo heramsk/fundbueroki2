@@ -1,6 +1,6 @@
 import streamlit as st
-import tensorflow as tf
-import numpy as np
+from transformers import pipeline
+from PIL import Image
 
 # =====================================
 # SEITENEINSTELLUNGEN
@@ -143,20 +143,44 @@ section[data-testid="stSidebar"] {
 """, unsafe_allow_html=True)
 
 # =====================================
-# KI LADEN
+# HUGGING FACE KI LADEN
 # =====================================
 
 @st.cache_resource
-def lade_modell():
-    return tf.keras.models.load_model("keras_model.h5", compile=False)
+def lade_huggingface_modell():
+    return pipeline(
+        "zero-shot-image-classification",
+        model="patrickjohncyh/fashion-clip"
+    )
 
-@st.cache_data
-def lade_labels():
-    with open("labels.txt", "r", encoding="utf-8") as datei:
-        return [zeile.strip() for zeile in datei.readlines()]
 
-modell = lade_modell()
-labels = lade_labels()
+# Kategorien für die KI
+HF_KATEGORIEN = [
+    "a water bottle",
+    "a pair of pants",
+    "a sweater or hoodie",
+    "a jacket",
+    "a shirt",
+    "a t-shirt",
+    "a pair of shoes",
+    "a hat or cap",
+    "another object"
+]
+
+
+# Englische KI-Bezeichnungen → deutsche Anzeige
+KATEGORIE_DEUTSCH = {
+    "a water bottle": "Flasche",
+    "a pair of pants": "Hose",
+    "a sweater or hoodie": "Pulli",
+    "a jacket": "Jacke",
+    "a shirt": "Hemd",
+    "a t-shirt": "T-Shirt",
+    "a pair of shoes": "Schuhe",
+    "a hat or cap": "Mütze / Kappe",
+    "another object": "Sonstiges"
+}
+
 
 # =====================================
 # FUNDSACHEN SPEICHERN
@@ -190,42 +214,49 @@ if "fundstuecke" not in st.session_state:
 if "seite" not in st.session_state:
     st.session_state.seite = "HOME"
 
+
 # =====================================
 # KI-KATEGORIE ERKENNEN
 # =====================================
 
 def erkenne_kategorie(bild):
-    bild = tf.keras.utils.load_img(
-        bild,
-        target_size=(224, 224)
+    hf_modell = lade_huggingface_modell()
+
+    # Hochgeladenes Bild als PIL-Bild öffnen
+    bild.seek(0)
+    bild_pil = Image.open(bild).convert("RGB")
+
+    ergebnisse = hf_modell(
+        bild_pil,
+        candidate_labels=HF_KATEGORIEN
     )
 
-    bild_array = tf.keras.utils.img_to_array(bild)
-    bild_array = np.asarray(bild_array, dtype=np.float32)
-    bild_array = (bild_array / 127.5) - 1
-    bild_array = np.expand_dims(bild_array, axis=0)
+    beste_kategorie = ergebnisse[0]["label"]
+    sicherheit = float(ergebnisse[0]["score"])
 
-    vorhersage = modell.predict(bild_array, verbose=0)
-    index = int(np.argmax(vorhersage[0]))
-    sicherheit = float(vorhersage[0][index])
+    deutsche_kategorie = KATEGORIE_DEUTSCH.get(
+        beste_kategorie,
+        "Sonstiges"
+    )
 
-    label = labels[index]
+    return deutsche_kategorie, sicherheit
 
-    # Nummer am Anfang entfernen:
-    # Beispiel: "0 Pulli" wird zu "Pulli"
-    kategorie = label.split(" ", 1)[-1]
-
-    return kategorie, sicherheit
 
 # =====================================
 # FUNDKARTE
 # =====================================
 
 def fundkarte_anzeigen(fund):
-    st.markdown('<div class="fund-card">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fund-card">',
+        unsafe_allow_html=True
+    )
 
     if fund["bild"] is not None:
-        st.image(fund["bild"], use_container_width=True)
+        st.image(
+            fund["bild"],
+            use_container_width=True
+        )
 
     st.markdown(
         f'<div class="fund-name">{fund["name"]}</div>',
@@ -243,7 +274,11 @@ def fundkarte_anzeigen(fund):
         unsafe_allow_html=True
     )
 
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True
+    )
+
 
 # =====================================
 # HOMEPAGE
@@ -259,6 +294,7 @@ def homepage():
 
     for fund in reversed(st.session_state.fundstuecke):
         fundkarte_anzeigen(fund)
+
 
 # =====================================
 # SUCHE
@@ -295,6 +331,7 @@ def suche():
         else:
             st.warning("Keine passenden Fundstücke gefunden.")
 
+
 # =====================================
 # FUND EINSTELLEN
 # =====================================
@@ -328,38 +365,47 @@ def fund_einstellen():
     erkannte_kategorie = None
 
     if bild is not None:
-        st.image(bild, caption="Hochgeladenes Bild", use_container_width=True)
+        st.image(
+            bild,
+            caption="Hochgeladenes Bild",
+            use_container_width=True
+        )
 
-        with st.spinner("Die KI analysiert das Bild ..."):
+        with st.spinner("Hugging Face KI analysiert das Bild ..."):
             try:
                 erkannte_kategorie, sicherheit = erkenne_kategorie(bild)
 
                 st.success(
                     f"Erkannte Kategorie: {erkannte_kategorie} "
-                    f"({sicherheit * 100:.1f}% Sicherheit)"
+                    f"({sicherheit * 100:.1f}% Übereinstimmung)"
                 )
 
                 if sicherheit < 0.60:
                     st.warning(
-                        "Die KI ist sich bei dieser Erkennung nicht ganz sicher."
+                        "Die KI ist sich bei dieser Erkennung "
+                        "nicht ganz sicher."
                     )
 
             except Exception as fehler:
                 st.error(
-                    "Das Bild konnte nicht analysiert werden. "
-                    "Überprüfe dein Modell und die Bildgröße."
+                    "Das Bild konnte nicht analysiert werden."
                 )
                 st.code(str(fehler))
 
     if st.button("✨ Fundstück veröffentlichen"):
         if not name.strip() or not ort.strip():
-            st.error("Bitte gib mindestens den Namen und den Fundort ein.")
+            st.error(
+                "Bitte gib mindestens den Namen "
+                "und den Fundort ein."
+            )
 
         elif bild is None:
             st.error("Bitte lade zuerst ein Bild hoch.")
 
         elif erkannte_kategorie is None:
-            st.error("Die Kategorie konnte nicht erkannt werden.")
+            st.error(
+                "Die Kategorie konnte nicht erkannt werden."
+            )
 
         else:
             neues_fundstueck = {
@@ -370,11 +416,18 @@ def fund_einstellen():
                 "bild": bild.getvalue()
             }
 
-            st.session_state.fundstuecke.append(neues_fundstueck)
+            st.session_state.fundstuecke.append(
+                neues_fundstueck
+            )
+
             st.session_state.seite = "HOME"
 
-            st.success("Fundstück erfolgreich veröffentlicht!")
+            st.success(
+                "Fundstück erfolgreich veröffentlicht!"
+            )
+
             st.rerun()
+
 
 # =====================================
 # NACHRICHTEN
@@ -386,7 +439,10 @@ def nachrichten():
         unsafe_allow_html=True
     )
 
-    st.info("Hier können später Nachrichten angezeigt werden.")
+    st.info(
+        "Hier können später Nachrichten angezeigt werden."
+    )
+
 
 # =====================================
 # PROFIL
@@ -398,7 +454,10 @@ def profil():
         unsafe_allow_html=True
     )
 
-    st.info("Hier können später Profildaten eingestellt werden.")
+    st.info(
+        "Hier können später Profildaten eingestellt werden."
+    )
+
 
 # =====================================
 # SEITENSTEUERUNG
@@ -419,11 +478,15 @@ elif st.session_state.seite == "NACHRICHTEN":
 elif st.session_state.seite == "PROFIL":
     profil()
 
+
 # =====================================
 # UNTERE NAVIGATION
 # =====================================
 
-st.markdown('<div class="bottom-space"></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="bottom-space"></div>',
+    unsafe_allow_html=True
+)
 
 st.divider()
 
